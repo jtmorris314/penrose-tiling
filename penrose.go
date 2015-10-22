@@ -21,10 +21,8 @@ import (
 	"math"
 	"math/cmplx"
 	"sort"
+	"flag"
 )
-
-// GoldenRatio of yore is represented as complex128 number.
-var goldenRatio complex128 = complex((1+math.Sqrt(5))/2, 0)
 
 // ColorType represents the type of rhombi ("red" is thin and
 // "blue" is thick).
@@ -36,14 +34,20 @@ const (
 	BLUE
 )
 
+const delta float64 = 0.000001
+
+type Point complex128
+type Polygon []Point
+
+// GoldenRatio of yore is represented as complex128 number.
+var goldenRatio Point = Point(complex((1+math.Sqrt(5))/2, 0))
+
 // Triangle maintains the triangle type and the position
 // of the three vertices: A, B, C.  The "x" coordinate is
 // the real part and the "y" coordinate is the imaginary part.
 type Triangle struct {
 	color ColorType
-	A     complex128
-	B     complex128
-	C     complex128
+	pts Polygon
 }
 
 // createSeedTriangles builds a wheel of red triangles around
@@ -51,65 +55,17 @@ type Triangle struct {
 func createSeedTriangles() []Triangle {
 	ts := make([]Triangle, 0, 10)
 	for i := 0; i < 10; i++ {
-		b := cmplx.Rect(1, float64(2*i-1)*math.Pi/float64(10))
-		c := cmplx.Rect(1, float64(2*i+1)*math.Pi/float64(10))
+		b := Point(cmplx.Rect(1, float64(2*i-1)*math.Pi/float64(10)))
+		c := Point(cmplx.Rect(1, float64(2*i+1)*math.Pi/float64(10)))
 		if i%2 == 0 {
 			b, c = c, b
 		}
-		t := Triangle{color: RED, A: 0i, B: b, C: c}
+		t := Triangle{color: RED, pts: Polygon{0i, b, c}}
 		ts = append(ts, t)
 	}
 	return ts
 }
 
-// drawTriangles outputs a postscript file with the triangles
-// filled and and the rhombi outlined.  The destination file
-// name is the first parameter and the slice of triangles to
-// draw is the second.
-func drawTriangles(fn string, ts []Triangle) {
-	s := cairo.NewPSSurface(fn, 1000, 1000, cairo.PS_LEVEL_3)
-	s.Translate(500, 500)
-	s.Scale(500, 500)
-	s.SetLineWidth(0.001)
-	s.SetLineJoin(cairo.LINE_JOIN_ROUND)
-
-	for _, t := range ts {
-		s.MoveTo(real(t.A), imag(t.A))
-		s.LineTo(real(t.B), imag(t.B))
-		s.LineTo(real(t.C), imag(t.C))
-		s.ClosePath()
-		if t.color == RED {
-			s.SetSourceRGB(1.0, 0.35, 0.35)
-		} else {
-			s.SetSourceRGB(0.4, 0.4, 1.0)
-		}
-		s.FillPreserve()
-		s.Stroke()
-
-		s.MoveTo(real(t.C), imag(t.C))
-		s.LineTo(real(t.A), imag(t.A))
-		s.LineTo(real(t.B), imag(t.B))
-		s.SetSourceRGB(0.2, 0.2, 0.2)
-		s.SetLineWidth(0.001)
-		s.Stroke()
-	}
-	s.Finish()
-}
-
-// printTriangle prints the triangle type (red/blue) and coordinates
-// of each vertex.
-func printTriangle(t Triangle) {
-	fmt.Printf("Color=%d, A=%g, B=%g, C=%g\n",
-		t.color, t.A, t.B, t.C)
-}
-
-// printTriangles dumps the values associated with every
-// triangle in the slice of triangles.
-func printTriangles(ts []Triangle) {
-	for _, t := range ts {
-		printTriangle(t)
-	}
-}
 
 // subdivideTriangles breaks each triangle into component triangles.
 // The "red" triangles result in one "blue" and one "red" triangle.
@@ -119,22 +75,33 @@ func subdivideTriangles(ts []Triangle) []Triangle {
 	result := make([]Triangle, 0, 10)
 	for _, t := range ts {
 		if t.color == RED {
-			P := t.A + (t.B-t.A)/goldenRatio
-			result = append(result, Triangle{RED, t.C, P, t.B},
-				Triangle{BLUE, P, t.C, t.A})
+			P := t.pts[0] + (t.pts[1]-t.pts[0])/goldenRatio
+			result = append(result, 
+					Triangle{RED, 
+						Polygon{t.pts[2], 
+							P, 
+							t.pts[1]}},
+					Triangle{BLUE, 
+						Polygon{P, 
+							t.pts[2], 
+							t.pts[0]}})
 		} else {
-			Q := t.B + (t.A-t.B)/goldenRatio
-			R := t.B + (t.C-t.B)/goldenRatio
-			result = append(result, Triangle{BLUE, R, t.C, t.A},
-				Triangle{BLUE, Q, R, t.B},
-				Triangle{RED, R, Q, t.A})
+			Q := t.pts[1] + (t.pts[0]-t.pts[1])/goldenRatio
+			R := t.pts[1] + (t.pts[2]-t.pts[1])/goldenRatio
+			result = append(result, 
+					Triangle{BLUE, 
+						Polygon{R, 
+							t.pts[2], 
+							t.pts[0]}},
+					Triangle{BLUE, Polygon{Q, R, t.pts[1]}},
+					Triangle{RED, Polygon{R, Q, t.pts[0]}})
 		}
 	}
 	return result
 }
 
 // ByBC represents a list of triangles, implements the sort
-// interface and sorts by the B vertex first and C vertex
+// interface and sorts by the B vertices first and C vertices
 // second.
 type ByBC []Triangle
 
@@ -149,22 +116,22 @@ func (ts ByBC) Swap(i, j int) { ts[i], ts[j] = ts[j], ts[i] }
 // C1.x < C2.x and C1.y < C2.y.
 //
 // The coordinates are float64 and the comparison allows
-// for <0.0001 tolerance.
+// for <delta tolerance.
 func (ts ByBC) Less(i, j int) bool {
 	switch {
-	case real(ts[i].B)-real(ts[j].B) < -0.0001:
+	case real(ts[i].pts[1])-real(ts[j].pts[1]) < -delta:
 		return true
-	case real(ts[i].B)-real(ts[j].B) > 0.0001:
+	case real(ts[i].pts[1])-real(ts[j].pts[1]) > delta:
 		return false
-	case imag(ts[i].B)-imag(ts[j].B) < -0.0001:
+	case imag(ts[i].pts[1])-imag(ts[j].pts[1]) < -delta:
 		return true
-	case imag(ts[i].B)-imag(ts[j].B) > 0.0001:
+	case imag(ts[i].pts[1])-imag(ts[j].pts[1]) > delta:
 		return false
-	case real(ts[i].C)-real(ts[j].C) < -0.0001:
+	case real(ts[i].pts[2])-real(ts[j].pts[2]) < -delta:
 		return true
-	case real(ts[i].C)-real(ts[j].C) > 0.0001:
+	case real(ts[i].pts[2])-real(ts[j].pts[2]) > delta:
 		return false
-	case imag(ts[i].C)-imag(ts[j].C) < -0.0001:
+	case imag(ts[i].pts[2])-imag(ts[j].pts[2]) < -delta:
 		return true
 	}
 	return false
@@ -174,10 +141,7 @@ func (ts ByBC) Less(i, j int) bool {
 // "thick"/"thin" respectively) and it's four vertices.
 type Rhombus struct {
 	color ColorType
-	A     complex128
-	B     complex128
-	C     complex128
-	D     complex128
+	pts Polygon
 }
 
 // mergeRhombi scans the sorted list of triangles and
@@ -185,94 +149,227 @@ type Rhombus struct {
 //
 // Unmatched triangles around the periphery are ignored.
 //
-// The BC matches are within <0.0001 tolerance to account
+// The BC matches are within <delta tolerance to account
 // for float64 imprecision.
 func mergeRhombi(ts []Triangle) []Rhombus {
 	rs := make([]Rhombus, 0, 10)
 	for i := 0; i < len(ts)-1; i++ {
 		if ts[i].color == ts[i+1].color &&
-			cmplx.Abs(ts[i].B-ts[i+1].B) < 0.0001 &&
-			cmplx.Abs(ts[i].C-ts[i+1].C) < 0.0001 {
+			cmplx.Abs(complex128(ts[i].pts[1]-ts[i+1].pts[1])) < delta &&
+			cmplx.Abs(complex128(ts[i].pts[2]-ts[i+1].pts[2])) < delta {
 			rs = append(rs, Rhombus{color: ts[i].color,
-				A: ts[i].A,
-				B: ts[i].B,
-				C: ts[i+1].A,
-				D: ts[i].C})
+				pts: Polygon{ts[i].pts[0], ts[i].pts[1],
+						ts[i+1].pts[0], ts[i].pts[2]}})
 			i = i + 1
 		}
 	}
 	return rs
 }
 
-// drawRhombi draws the rhombi in the list of rhombi.
-//
-// TBD: handle scaling like drawInsertRhombi.
-func drawRhombi(fn string, rs []Rhombus, scaleFactor float64) {
-	s := cairo.NewPSSurface(fn, 1000, 1000, cairo.PS_LEVEL_3)
-	s.Translate(500, 500)
-	s.Scale(scaleFactor, scaleFactor)
-	s.SetLineWidth(0.001)
-	s.SetLineJoin(cairo.LINE_JOIN_ROUND)
 
-	for _, r := range rs {
-		s.MoveTo(real(r.A), imag(r.A))
-		s.LineTo(real(r.B), imag(r.B))
-		s.LineTo(real(r.C), imag(r.C))
-		s.LineTo(real(r.D), imag(r.D))
-		s.ClosePath()
-		if r.color == RED {
-			s.SetSourceRGB(1.0, 0.35, 0.35)
-		} else {
-			s.SetSourceRGB(0.4, 0.4, 1.0)
+// AB <>  P <> CD and BC <> P <> DA
+func polygonContains(bounds Polygon, point Point) bool {
+	x := real(point)
+	y := imag(point)
+
+	inside := false
+        j := len(bounds) - 1
+	for i, v := range bounds {
+		xi := real(v)
+		xj := real(bounds[j])
+		yi := imag(v)
+		yj := imag(bounds[j])
+		
+		intersect := (yi > y) != (yj > y) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)
+		if intersect {
+			inside = !inside
 		}
-		s.FillPreserve()
-		s.SetSourceRGB(0.2, 0.2, 0.2)
-		s.Stroke()
+
+		j = i
 	}
-	s.Finish()
+	return inside
+/*
+	return (real(point) >= real(bounds[0])+delta && real(point) <= real(bounds[2])-delta) && (imag(point) <= imag(bounds[0])-delta && imag(point) >= imag(bounds[2])+delta)
+*/
 }
 
-// drawInsetRhombi draws the list of rhombi at the indicated scaling factor
-// inset according to the ratios for the "red" and "blue" rhombi.
+// checkInbounds
 //
-// TBD: move sizing of surface to caller.
-func drawInsetRhombi(fn string, rs []Rhombus, scaleFactor, redInsetRatio, blueInsetRatio float64) {
-	s := cairo.NewPSSurface(fn, 250/MM_PER_PT, 500/MM_PER_PT, cairo.PS_LEVEL_3)
-	s.Translate(250/MM_PER_PT/2, 500/MM_PER_PT/2)
-	s.Scale(scaleFactor, scaleFactor)
-	s.SetLineWidth(0.001)
-	s.SetLineJoin(cairo.LINE_JOIN_ROUND)
-
-	for _, r := range rs {
-		insetRatio := redInsetRatio
-		s.MoveTo(real(r.A), imag(r.A))
-		s.LineTo(real(r.B), imag(r.B))
-		s.LineTo(real(r.C), imag(r.C))
-		s.LineTo(real(r.D), imag(r.D))
-		s.ClosePath()
-		s.SetSourceRGB(0.35, 0.33, 0.10)
-		s.Fill()
-		if r.color == BLUE {
-			insetRatio = blueInsetRatio
+// TBD: need to move call to this function to process rhomboids before drawing.
+// TBD: need to calculate "truncated" rhomboids -- might want to key off
+// "good" points in/around this function since we've just calculated them.  Could
+// return good points and then have another func create new "truncated" rhomboid.
+func checkInbounds(bounds Polygon, rhombus Polygon) (bool, bool) {
+	contains := true
+	overlaps := false
+	for _, v := range rhombus {
+		if polygonContains(bounds, v) {
+			overlaps = true	
+		} else {
+			contains = false
 		}
-		newA := r.A + complex((real(r.C)-real(r.A)) * insetRatio,
-			(imag(r.C)-imag(r.A)) * insetRatio)
-		newB := r.B + complex((real(r.D)-real(r.B)) * insetRatio,
-			(imag(r.D)-imag(r.B)) * insetRatio)
-		newC := r.C + complex((real(r.A)-real(r.C)) * insetRatio,
-			(imag(r.A)-imag(r.C)) * insetRatio)
-		newD := r.D + complex((real(r.B)-real(r.D)) * insetRatio,
-			(imag(r.B)-imag(r.D)) * insetRatio)
-		s.MoveTo(real(newA), imag(newA))
-		s.LineTo(real(newB), imag(newB))
-		s.LineTo(real(newC), imag(newC))
-		s.LineTo(real(newD), imag(newD))
-		s.ClosePath()
-		s.SetSourceRGB(1.0, 1.0, 1.0)
-		s.FillPreserve()
-		s.SetSourceRGB(0.2, 0.2, 0.2)
+	}
+	return contains, overlaps
+}
+
+func lineBoundaryLineIntersect(a1, a2, b1, b2 Point) (bool, Point) {
+	ax := real(a1) - real(a2)
+	ay := imag(a1) - imag(a2)
+	bx := real(b1) - real(b2)
+	by := imag(b1) - imag(b2)
+
+	divisor := ax * by - ay * bx
+
+	if (math.Abs(divisor) < delta) {
+		return false, 0i
+	}
+	
+	t1 := real(a1) * imag(a2) - imag(a1) * real(a2)
+	t2 := real(b1) * imag(b2) - imag(b1) * real(b2)
+
+	x := (t1 * bx - t2 * ax) / divisor
+	y := (t1 * by - t2 * ay) / divisor 
+	p := Point(complex(x, y))
+
+	invertx := 1.0
+	if real(b1) > real(b2) {
+		invertx = -1.0
+	}
+	inverty := 1.0
+	if imag(b1) < imag(b2) {
+		inverty = -1.0
+	}
+	a := Point(complex(real(b1) - invertx * delta, imag(b1) + inverty * delta))
+	b := Point(complex(real(b2) + invertx * delta, imag(b1) + inverty * delta))
+	c := Point(complex(real(b2) + invertx * delta, imag(b2) - inverty * delta))
+	d := Point(complex(real(b1) - invertx * delta, imag(b2) - inverty * delta))
+
+	lineSegmentBounds := Polygon{a, b, c, d}
+	if polygonContains(lineSegmentBounds, p) {
+		return true, p
+	}
+
+	return false, 0i
+
+}
+
+func lineBoundsIntersect(bounds Polygon, p1, p2 Point) (bool, Point) {
+        j := len(bounds) - 1
+	for i, vi := range bounds {
+		vj := bounds[j]
+		if intersect, p := lineBoundaryLineIntersect(vi, vj, p1, p2); 
+				intersect == true {
+			return true, p
+		}
+		j = i;
+	}
+	return false, 0i
+}
+
+// truncateRhombus
+//
+// Find vertex out-of-bounds.  Find intersection with bounds between it's
+// two connected sides.  Add intersection points to make new polygon.
+// TBD: think about boundary cases (vertex on bounds, vertex and connecting
+// side on bounds ... and corner case -- which we might just ignore)
+func truncateRhombus(bounds Polygon, rhombus Polygon) Polygon {
+	var polygon Polygon
+        j := len(rhombus) - 1
+	for i, vi := range rhombus {
+		vj := rhombus[j]
+		iIn := polygonContains(bounds, vi)
+		jIn := polygonContains(bounds, vj)
+		if iIn != jIn {
+			intersects, pt := lineBoundsIntersect(bounds, vi, vj)
+			if intersects {
+				polygon = append(polygon, pt)
+			} else {
+				fmt.Println("ouch", bounds, polygon, pt, vi, vj)
+			}
+		}
+		if iIn {
+			polygon = append(polygon, vi)
+		} 
+
+		j = i;
+	}
+	return polygon
+}
+
+func clipToBounds(rs []Rhombus, width, height, scale float64) []Rhombus {
+	var crs []Rhombus
+	divisor := MM_PER_PT*2*scale
+	bounds := Polygon{Point(complex(-width/divisor,+height/divisor)),
+				Point(complex(+width/divisor,+height/divisor)),
+				Point(complex(+width/divisor,-height/divisor)),
+				Point(complex(-width/divisor,-height/divisor))}
+	for _, r := range rs {
+		contains, overlaps := checkInbounds(bounds, r.pts)
+		if contains {
+			crs = append(crs, r)
+		} else if overlaps {
+			newPoly := truncateRhombus(bounds, r.pts)
+			crs = append(crs, Rhombus{color: r.color, pts: newPoly})
+		}
+	}
+
+	return crs
+}
+
+func insetRhombi(rs []Rhombus, redInsetRatio, blueInsetRatio float64) []Rhombus {
+	var irs []Rhombus
+	for _, r := range rs {
+		insetRatio := Point(complex(redInsetRatio, 0))
+		if r.color == BLUE {
+			insetRatio = Point(complex(blueInsetRatio, 0))
+		}
+		newA := r.pts[0] + (r.pts[2] - r.pts[0]) * insetRatio
+		newB := r.pts[1] + (r.pts[3] - r.pts[1]) * insetRatio
+		newC := r.pts[2] + (r.pts[0] - r.pts[2]) * insetRatio
+		newD := r.pts[3] + (r.pts[1] - r.pts[3]) * insetRatio
+		newRhombus := Rhombus{color: r.color, pts: Polygon{newA, newB, newC, newD}}
+		irs = append(irs, newRhombus)
+	}
+	return irs
+}
+
+// drawRhombi draws the list of rhombi at the indicated scaling factor
+//
+func drawRhombi(fn string, rs []Rhombus, params Params) {
+	s := cairo.NewPSSurface(fn, 
+				(params.width+1)/MM_PER_PT, 
+				(params.height+1)/MM_PER_PT, 
+				cairo.PS_LEVEL_3)
+
+	// Draw bounding box in red
+	if params.boundingBox {
+		s.SetSourceRGB(1, 0, 0)
+		s.SetLineWidth(0.001)		// laser: has to be this value to cut 
+		s.Rectangle(1/MM_PER_PT, 
+				1/MM_PER_PT, 
+				(params.width-1)/MM_PER_PT, 
+				(params.height-1)/MM_PER_PT)
 		s.Stroke()
 	}
+
+	s.Translate((params.width+1)/MM_PER_PT/2, 
+			(params.height+1)/MM_PER_PT/2)
+	s.Scale(params.scale, params.scale)
+	s.SetLineWidth(0.001/params.scale)	// laser: has to be this value to cut 
+	s.SetSourceRGB(0, 0, 0)
+
+	for _, r := range rs {
+		for i, v := range r.pts {
+			if i == 0 {
+				s.MoveTo(real(v), imag(v))
+			} else {
+				s.LineTo(real(v), imag(v))
+			}
+		}
+		s.ClosePath()
+		s.Stroke()
+	}
+
 	s.Finish()
 }
 
@@ -299,7 +396,14 @@ func redBlueInsetRatios(sideLength, inset float64) (redInsetRatio, blueInsetRati
 const MM_PER_PT float64 = 0.352777778                      // size of point in millimeters
 const RHOMBUS_SIDE_IN_MM float64 = 3.0                     // length of sides for the rhombi
 const SCREEN_WIDTH_IN_MM float64 = 0.75                    // width of screen's "wire"
-const RHOMBUS_INSET_IN_MM float64 = SCREEN_WIDTH_IN_MM / 2 // width of wire overlapping the rhombi's side
+
+type Params struct {
+	width, height, margin float64
+	boundingBox bool
+	rhombusSide float64
+        rhombusSeparation float64
+	scale float64
+}
 
 // main creates the seed triangles, subdivides the triangles
 // through 10 generations, sorts the triangles so correpsonding
@@ -308,17 +412,46 @@ const RHOMBUS_INSET_IN_MM float64 = SCREEN_WIDTH_IN_MM / 2 // width of wire over
 // target size of the rhombi and border size and finally
 // draws the rhombi to "penrose.ps".
 func main() {
+        params := Params{}
+	flag.Float64Var(&params.rhombusSide, "side", 
+			RHOMBUS_SIDE_IN_MM, "mm's of space between rhombii")
+	flag.Float64Var(&params.rhombusSeparation, "separation", 
+			SCREEN_WIDTH_IN_MM, "mm's of space between rhombii")
+	flag.BoolVar(&params.boundingBox, "outline?", false, "true to cut along bounds")
+	flag.Float64Var(&params.height, "height", 610.0, "mm's of panel height")
+	flag.Float64Var(&params.margin, "margin", 5, "mm's of panel margin")
+	flag.Float64Var(&params.width, "width", 381.0, "mm's of panel width")
+        fnamePtr := flag.String("file", "penrose.ps", "output file")
+	gensPtr := flag.Int("gens", 10, "number of generations")
+
+        flag.Parse()
+        fmt.Println("fname", *fnamePtr)
+	fmt.Println("gens", *gensPtr)
+	fmt.Println("params", params)
+
 	fmt.Printf("Starting penrose tiling.\n")
 	ts := createSeedTriangles()
-	for i := 0; i < 10; i++ {
+	for i := 0; i < *gensPtr; i++ {
 		ts = subdivideTriangles(ts)
 	}
+	fmt.Println("ts len", len(ts))
+
 	sort.Sort(ByBC(ts))
 	rs := mergeRhombi(ts)
-	length := math.Sqrt(math.Pow(real(ts[0].A)-real(ts[0].B), 2) +
-		math.Pow(imag(ts[0].A)-imag(ts[0].B), 2))
-	scaleFactor := scaleToRhombusSide(length, RHOMBUS_SIDE_IN_MM/MM_PER_PT)
-	redInsetRatio, blueInsetRatio := redBlueInsetRatios(RHOMBUS_SIDE_IN_MM, RHOMBUS_INSET_IN_MM)
-	drawInsetRhombi("penrose.ps", rs, scaleFactor, redInsetRatio, blueInsetRatio)
+	fmt.Println("rs len", len(rs))
+
+	length := math.Sqrt(math.Pow(real(ts[0].pts[0])-real(ts[0].pts[1]), 2) +
+		math.Pow(imag(ts[0].pts[0])-imag(ts[0].pts[1]), 2))
+	params.scale = scaleToRhombusSide(length, params.rhombusSide/MM_PER_PT)
+	redInsetRatio, blueInsetRatio := redBlueInsetRatios(params.rhombusSide, 
+								params.rhombusSeparation/2)
+	rs = insetRhombi(rs, redInsetRatio, blueInsetRatio)
+	fmt.Println("inset rs len", len(rs))
+
+	rs = clipToBounds(rs, params.width - 2 * params.margin, 
+				params.height - 2 * params.margin, params.scale)
+	fmt.Println("clip rs len", len(rs))
+
+	drawRhombi(*fnamePtr, rs, params)
 	fmt.Printf("Ending penrose tiling.\n")
 }
